@@ -1,3 +1,14 @@
+organize-includes (0.0.2) UNRELEASED; urgency=medium
+
+  * Add -v/--verbose, -q/--quiet, --debug; use logging module for all output.
+  * Log which profile file is in use when verbose or debug.
+  * When -v or --debug: recursively scan each -I dir and log file count and total.
+  * Search quoted includes in source file's directory first, then -I dirs
+    (compiler behavior; fixes same-dir headers).
+  * Clarify resolve_include "not found" debug message.
+
+ -- Lenik (谢继雷) <lenik@bodz.net>  Fri, 13 Feb 2026 14:00:00 +0000
+
 organize-includes (0.0.1) UNRELEASED; urgency=medium
 
   * Initial release.

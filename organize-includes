@@ -12,9 +12,13 @@ Options:
   -I <includedir>       Add to include search path
   -p/--profile FILE     Load profile from YAML (default: ./.includes.yaml, ~/.includes.yaml, ~/.config/organize-includes/default.yaml)
   -k/--keep-order       Do not reorder includes (default is to reorder per profile)
+  -v/--verbose          Log profile file in use and extra info
+  -q/--quiet            Only errors and warnings
+  --debug               Enable debug logging
 """
 
 import argparse
+import logging
 import os
 import re
 import sys
@@ -23,6 +27,8 @@ try:
     import yaml
 except ImportError:
     yaml = None
+
+log = logging.getLogger(__name__)
 
 # Standard C header dirs for std_c match (when profile uses std_c_dirs)
 _STD_C_DIRS = frozenset(["", "arpa", "sys", "asm", "bits"])
@@ -62,6 +68,17 @@ def _default_profile_search_paths() -> list[str]:
     ]
 
 
+def _count_files_recursive(dirpath: str) -> int:
+    """Return the number of files under dirpath (recursive; does not follow symlinks)."""
+    count = 0
+    try:
+        for _root, _dirs, files in os.walk(dirpath, topdown=True, followlinks=False):
+            count += len(files)
+    except OSError:
+        return -1
+    return count
+
+
 def find_default_profile() -> str | None:
     """Return the first path in default search order that exists, or None."""
     for path in _default_profile_search_paths():
@@ -73,7 +90,9 @@ def find_default_profile() -> str | None:
 def load_profile(path: str | None) -> dict:
     """Load profile from YAML file or return default. Raises on invalid YAML or missing PyYAML."""
     if not path:
+        log.debug("Using built-in default profile (no path)")
         return DEFAULT_PROFILE.copy()
+    log.debug("Loading profile from %s", path)
     if yaml is None:
         raise RuntimeError("--profile requires PyYAML; install with: pip install PyYAML")
     with open(path, encoding="utf-8") as f:
@@ -86,6 +105,8 @@ def load_profile(path: str | None) -> dict:
         out["quoted_groups"] = list(data["quoted_groups"])
     if "angle_groups" in data:
         out["angle_groups"] = list(data["angle_groups"])
+    log.debug("Profile loaded: quoted_groups=%s, angle_groups count=%s",
+              out.get("quoted_groups"), len(out.get("angle_groups", [])))
     return out
 
 
@@ -95,8 +116,11 @@ def resolve_include(include_path: str, include_dirs: list[str]) -> str | None:
         if not os.path.isabs(incdir):
             continue
         candidate = os.path.normpath(os.path.join(incdir, include_path))
+        log.debug("resolve_include %r: try %r -> %s", include_path, incdir, candidate)
         if os.path.isfile(candidate):
+            log.debug("resolve_include %r: found %s", include_path, candidate)
             return candidate
+    log.debug("resolve_include %r: not found in %s dirs", include_path, len(include_dirs))
     return None
 
 
@@ -221,6 +245,9 @@ def _parse_includes(content: str) -> tuple[str, list[tuple[bool, str, str]], str
             break
         before.append(line)
         i += 1
+    if includes:
+        log.debug("_parse_includes: %s includes (%s quoted)",
+                  len(includes), sum(1 for q, _, _ in includes if q))
     return "\n".join(before), includes, "\n".join(after_lines)
 
 
@@ -237,10 +264,6 @@ def _format_reordered_includes(
     for is_quoted, path, full_line in includes:
         if is_quoted:
             resolved = resolve_include(path, include_dirs)
-            if resolved is None:
-                candidate = os.path.normpath(os.path.join(source_dir, path))
-                if os.path.isfile(candidate):
-                    resolved = candidate
             if resolved is not None:
                 new_path = relpath_from_to(source_dir, resolved)
                 if new_path != path:
@@ -283,6 +306,9 @@ def _format_reordered_includes(
 
     angle.sort(key=angle_key)
 
+    log.debug("_format_reordered_includes: quoted %s, angle %s, path_changes %s",
+              len(quoted), len(angle), path_changes)
+
     # Build output with blank lines between groups
     out: list[str] = []
     last_q = -1
@@ -313,8 +339,11 @@ def update_includes_in_content(
     profile: dict | None = None,
 ) -> tuple[str, int]:
     """Update #include "..." in content; optionally reorder. Returns (new_content, number_of_changes)."""
+    log.debug("update_includes_in_content %r reorder=%s", source_path, reorder)
     source_dir = os.path.dirname(os.path.abspath(source_path))
-    abs_include_dirs = [d for d in include_dirs if os.path.isdir(d)] if include_dirs else [source_dir]
+    # Search order: current file's directory first (like compilers), then -I dirs
+    abs_include_dirs = [d for d in include_dirs if os.path.isdir(d)] if include_dirs else []
+    search_dirs = [source_dir] + abs_include_dirs
     if profile is None:
         profile = DEFAULT_PROFILE
 
@@ -323,7 +352,7 @@ def update_includes_in_content(
         if not includes:
             return content, 0
         lines, _path_changes = _format_reordered_includes(
-            includes, source_path, source_dir, abs_include_dirs, profile
+            includes, source_path, source_dir, search_dirs, profile
         )
         new_block = "\n".join(lines)
         if after:
@@ -338,11 +367,7 @@ def update_includes_in_content(
     def repl(match: re.Match) -> str:
         nonlocal changes
         prefix, old_path, suffix = match.group(1), match.group(2), match.group(3)
-        resolved = resolve_include(old_path, abs_include_dirs)
-        if resolved is None:
-            candidate = os.path.normpath(os.path.join(source_dir, old_path))
-            if os.path.isfile(candidate):
-                resolved = candidate
+        resolved = resolve_include(old_path, search_dirs)
         if resolved is None:
             return match.group(0)
         new_path = relpath_from_to(source_dir, resolved)
@@ -389,12 +414,37 @@ def main() -> int:
         help="Do not reorder includes (default is to reorder per profile)",
     )
     parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Log profile file in use and extra info",
+    )
+    parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Only errors and warnings (no per-file update messages)",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging",
+    )
+    parser.add_argument(
         "sourcefiles",
         nargs="+",
         metavar="sourcefile",
         help="Source files to update",
     )
     args = parser.parse_args()
+
+    if args.quiet and args.verbose:
+        parser.error("Cannot use both -q/--quiet and -v/--verbose")
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else (logging.WARNING if args.quiet else logging.INFO),
+        format="%(message)s",
+    )
 
     if not args.include_dirs:
         parser.error("At least one -I includedir is required")
@@ -405,33 +455,49 @@ def main() -> int:
         if os.path.isdir(ad):
             abs_include_dirs.append(ad)
         else:
-            print(f"Warning: include dir not found or not a directory, skipping: {d}", file=sys.stderr)
+            log.warning("Include dir not found or not a directory, skipping: %s", d)
     if not abs_include_dirs:
-        print("Error: no valid include directories", file=sys.stderr)
+        log.error("No valid include directories")
         return 1
+
+    if args.verbose or args.debug:
+        total_scanned = 0
+        for ad in abs_include_dirs:
+            n = _count_files_recursive(ad)
+            if n >= 0:
+                log.info("Scanned -I %s: %s files", ad, n)
+                total_scanned += n
+            else:
+                log.warning("Could not scan -I %s", ad)
+        log.info("Total files in include dirs: %s", total_scanned)
 
     reorder = not args.keep_order
     profile = DEFAULT_PROFILE
+    profile_in_use: str | None = None
     if reorder and args.profile_file:
         try:
             profile = load_profile(args.profile_file)
+            profile_in_use = os.path.abspath(args.profile_file)
         except (OSError, ValueError, RuntimeError) as e:
-            print(f"Error loading profile: {e}", file=sys.stderr)
+            log.error("Error loading profile: %s", e)
             return 1
     elif reorder:
         default_path = find_default_profile()
         profile = load_profile(default_path)
+        profile_in_use = os.path.abspath(default_path) if default_path else "(built-in default)"
+    if profile_in_use and (args.verbose or args.debug):
+        log.info("Using profile: %s", profile_in_use)
 
     total_changes = 0
     for path in args.sourcefiles:
         if not os.path.isfile(path):
-            print(f"Warning: not a file, skipping: {path}", file=sys.stderr)
+            log.warning("Not a file, skipping: %s", path)
             continue
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read()
         except OSError as e:
-            print(f"Error reading {path}: {e}", file=sys.stderr)
+            log.error("Error reading %s: %s", path, e)
             continue
 
         new_content, n = update_includes_in_content(
@@ -441,18 +507,18 @@ def main() -> int:
             continue
         total_changes += n
         if args.dry_run:
-            print(f"Would update {path} ({n} include(s))")
+            log.info("Would update %s (%s include(s))", path, n)
             continue
         try:
             with open(path, "w", encoding="utf-8", newline="") as f:
                 f.write(new_content)
         except OSError as e:
-            print(f"Error writing {path}: {e}", file=sys.stderr)
+            log.error("Error writing %s: %s", path, e)
             continue
-        print(f"Updated {path} ({n} include(s))")
+        log.info("Updated %s (%s include(s))", path, n)
 
     if args.dry_run and total_changes:
-        print(f"Dry run: {total_changes} total include(s) would be updated.")
+        log.info("Dry run: %s total include(s) would be updated.", total_changes)
     return 0
 
 
