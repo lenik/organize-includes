@@ -119,8 +119,9 @@ def _quoted_group(source_path: str, include_path: str, quoted_groups: list[str])
     return (idx, p)
 
 
-def _path_matches_angle_group(path: str, grp: dict, basename: str) -> bool:
-    """Return True if path is matched by this group (prefixes or match type)."""
+def _path_claimed_by_group(path: str, grp: dict, basename: str, topdir: str) -> bool:
+    """Return True if this group claims the path (prefixes, no_ext_h, std_c_dirs only).
+    other_c / other_cpp / other are not claiming; they are assigned by tag rules."""
     prefixes = grp.get("prefixes") or []
     for p in prefixes:
         if path.startswith(p) or path.lower().startswith(p.lower()):
@@ -130,53 +131,48 @@ def _path_matches_angle_group(path: str, grp: dict, basename: str) -> bool:
         return "/" not in path and not basename.endswith(".h") and not basename.endswith(".hpp")
     if match == "std_c_dirs":
         if basename.endswith(".h"):
-            top = path.split("/", 1)[0].lower() if "/" in path else ""
+            top = topdir.lower() if topdir else ""
             return top in _STD_C_DIRS
         return False
-    if match == "other_cpp":
-        return "/" in path and not basename.endswith(".h")
-    if match == "other_c":
-        return "/" in path and basename.endswith(".h")
-    if match == "other":
-        return "/" in path
     return False
 
 
 def _angle_group(include_path: str, angle_groups: list[dict]) -> tuple[int, str, str]:
-    """Return (order_index, subgroup, sort_key) for an angle include using profile angle_groups."""
+    """Return (order_index, subgroup, sort_key) for an angle include using profile angle_groups.
+    Tag-first: paths are tagged by which groups claim them (prefixes, no_ext_h, std_c_dirs).
+    If any group claims the path, use the first such group in list order.
+    If none claim it, assign by intrinsic tags: only ext_h -> other_c, only ext_hpp -> other_cpp.
+    Subgroup uses only the top-level dir (e.g. foo/bar/cat.h -> subgroup foo)."""
     path = include_path.strip()
-    dirname = os.path.dirname(path)
     basename = os.path.basename(path)
+    topdir = path.split("/", 1)[0] if "/" in path else ""
+    has_path = "/" in path
+    ext_h = basename.endswith(".h")
+    ext_hpp = has_path and not ext_h  # path with / and not .h -> C++ other
 
+    # First pass: any group that claims this path (prefix, no_ext_h, std_c_dirs)?
     for idx, grp in enumerate(angle_groups):
-        prefixes = grp.get("prefixes") or []
-        for p in prefixes:
-            if path.startswith(p) or path.lower().startswith(p.lower()):
-                return (idx, "", path)
+        if _path_claimed_by_group(path, grp, basename, topdir):
+            if grp.get("prefixes"):
+                sub = ""
+            elif grp.get("match") == "std_c_dirs" and ext_h:
+                sub = topdir or _STD_C_EMPTY_SUBGROUP
+            elif has_path:
+                sub = topdir or "\x00"
+            else:
+                sub = ""
+            return (idx, sub, path)
+
+    # No claiming group: assign by intrinsic tags (other_c / other_cpp / other)
+    for idx, grp in enumerate(angle_groups):
         match = grp.get("match")
-        if match == "no_ext_h":
-            if "/" not in path and not basename.endswith(".h") and not basename.endswith(".hpp"):
-                return (idx, "", path)
-        elif match == "std_c_dirs":
-            if basename.endswith(".h"):
-                top = path.split("/", 1)[0].lower() if "/" in path else ""
-                if top in _STD_C_DIRS:
-                    return (idx, dirname or _STD_C_EMPTY_SUBGROUP, path)
-        elif match == "other_cpp":
-            if "/" in path and not basename.endswith(".h"):
-                return (idx, dirname or "\x00", path)
-        elif match == "other_c":
-            if "/" in path and basename.endswith(".h"):
-                # Only match if no later group would match (famous-c, glib, std-c)
-                if not any(
-                    _path_matches_angle_group(path, angle_groups[j], basename)
-                    for j in range(idx + 1, len(angle_groups))
-                ):
-                    return (idx, dirname or "\x00", path)
-        elif match == "other":
-            if "/" in path:
-                return (idx, dirname or "\x00", path)
-    # Fallback: last group or high index
+        if match == "other_c" and has_path and ext_h:
+            return (idx, topdir or "\x00", path)
+        if match == "other_cpp" and has_path and ext_hpp:
+            return (idx, topdir or "\x00", path)
+        if match == "other" and has_path:
+            return (idx, topdir or "\x00", path)
+
     return (len(angle_groups), "", path)
 
 
