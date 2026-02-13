@@ -1,0 +1,7 @@
+organize-includes (0.0.1) UNRELEASED; urgency=medium
+
+  * Initial release.
+  * YAML style for include groups; -s/--style FILE.
+  * --reorder respects style (quoted_groups, angle_groups).
+
+ -- Lenik (谢继雷) <lenik@bodz.net>  Fri, 13 Feb 2026 12:00:00 +0000

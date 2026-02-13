@@ -1,0 +1,16 @@
+Source: organize-includes
+Section: devel
+Priority: optional
+Maintainer: Lenik <organize-includes@bodz.net>
+Build-Depends: debhelper-compat (= 13), python3
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: organize-includes
+Architecture: all
+Depends: python3 (>= 3.10), ${misc:Depends}
+Recommends: python3-yaml
+Description: Reorder and normalize #include directives in C/C++ sources
+ organize-includes updates #include paths to be relative to each source
+ file and can group/sort includes according to a YAML style file.
+ PyYAML (python3-yaml) is recommended when using custom style files (-s).

@@ -1,0 +1,74 @@
+.TH ORGANIZE\-INCLUDES 1
+.SH NAME
+organize-includes \- update and reorder #include directives in C/C++ sources
+.SH SYNOPSIS
+.B organize-includes
+.B \-I
+.I includedir
+[\fB\-p\fR \fIFILE\fR]
+[\fB\-k\fR | \fB\-\-keep\-order\fR]
+[\fB\-\-dry\-run\fR]
+.I sourcefile
+[\fI...\fR]
+.SH DESCRIPTION
+.B organize-includes
+resolves quoted
+.B #include
+paths using the given include directories and rewrites them to be relative to each source file. By default it also groups and sorts
+.B #include
+lines according to the built-in profile (or
+.B \-p
+.I FILE
+). Use
+.B \-k
+to leave include order unchanged.
+.SH OPTIONS
+.TP
+.BI \-I " includedir"
+Add
+.I includedir
+to the include search path. May be repeated. At least one is required.
+.TP
+.BI \-p \-\-profile " FILE"
+Load include group profile from the YAML file
+.IR FILE .
+If omitted, the built-in default profile is used.
+.TP
+.B \-k \-\-keep\-order
+Do not reorder includes (default is to reorder per profile).
+.TP
+.B \-\-dry\-run
+Print what would be changed without modifying files.
+.SH PROFILE FILE
+The profile file is YAML. Default angle order: other-c++ > famous-c++ > boost > std-c++ > other-c > famous-c > glib > std-c. Top-level keys:
+.TP
+.B quoted_groups
+List of quoted-include group names in output order:
+.BR samename ,
+.BR samedir ,
+.BR parentdir ,
+.BR other ,
+.BR parentdir_other .
+.TP
+.B angle_groups
+List of angle-include groups. Each entry has
+.B name
+(optional) and either
+.B prefixes
+(list of path prefixes) or
+.B match
+(one of
+.BR no_ext_h ,
+.BR std_c_dirs ,
+.BR other_cpp ,
+.BR other_c ,
+.BR other ).
+See
+.I example/style.yaml
+in the source tree.
+.SH EXIT STATUS
+0 on success. 1 on invalid options, missing include dirs, profile load error, or I/O error.
+.SH SEE ALSO
+README.md, example/style.yaml
+.SH LICENSE
+GPL-3.0-or-later.

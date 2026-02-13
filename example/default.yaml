@@ -1,0 +1,28 @@
+# Include group profile for organize-includes (use -p FILE to override default)
+# Default order: other-c++ > famous-c++ > boost > std-c++ > other-c > famous-c > glib > std-c
+# First match wins for angle includes.
+
+quoted_groups:
+  - samename
+  - samedir
+  - parentdir
+  - other
+  - parentdir_other
+
+angle_groups:
+  - name: other_cpp
+    match: other_cpp   # path with /, basename not .h (C++ other)
+  - name: famous_cpp
+    prefixes: ["wx/", "Qt/", "QtCore/", "QtGui/", "qtservice/"]
+  - name: boost
+    prefixes: ["boost/"]
+  - name: std_cpp
+    match: no_ext_h    # <file> with no .h/.hpp (standard C++)
+  - name: other_c
+    match: other_c     # path with / and .h, not famous-c/glib/std-c
+  - name: famous_c
+    prefixes: ["curl/", "openssl/", "pcre2/", "zlib.h", "libxml2/", "sqlite3.h", "png.h", "jpeglib.h", "zconf.h"]
+  - name: glib
+    prefixes: ["glib.h", "glib/", "gio/", "gmodule/", "gobject/", "gtk/", "gdk/"]
+  - name: std_c
+    match: std_c_dirs  # arpa/, sys/, asm/, bits/ or <file.h>

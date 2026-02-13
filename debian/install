@@ -1,0 +1,5 @@
+organize-includes usr/bin
+organize-includes.1 usr/share/man/man1
+README.md LICENSE usr/share/doc/organize-includes
+example/default.yaml example/main.c usr/share/organize-includes/example
+bash-completion/organize-includes usr/share/bash-completion/completions

@@ -1,0 +1,444 @@
+#!/usr/bin/env python3
+"""
+Update #include directives in source files to use paths relative to each file.
+Optionally reorder and group #include lines according to a YAML profile file.
+
+Copyright (C) 2026 Lenik <organize-includes@bodz.net>
+
+Usage:
+  organize-includes [OPTIONS] sourcefiles...
+
+Options:
+  -I <includedir>       Add to include search path
+  -p/--profile FILE     Load profile from YAML
+  -k/--keep-order       Do not reorder includes (default is to reorder per profile)
+"""
+
+import argparse
+import os
+import re
+import sys
+
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
+# Standard C header dirs for std_c match (when profile uses std_c_dirs)
+_STD_C_DIRS = frozenset(["", "arpa", "sys", "asm", "bits"])
+_STD_C_EMPTY_SUBGROUP = "~\x00"
+
+
+# Default angle order: other-c++ > famous-c++ > boost > std-c++ > other-c > famous-c > glib > std-c
+DEFAULT_PROFILE = {
+    "quoted_groups": [
+        "samename",
+        "samedir",
+        "parentdir",
+        "other",
+        "parentdir_other",
+    ],
+    "angle_groups": [
+        {"name": "other_cpp", "match": "other_cpp"},
+        {"name": "famous_cpp", "prefixes": ["wx/", "Qt/", "QtCore/", "QtGui/", "qtservice/"]},
+        {"name": "boost", "prefixes": ["boost/"]},
+        {"name": "std_cpp", "match": "no_ext_h"},
+        {"name": "other_c", "match": "other_c"},
+        {"name": "famous_c", "prefixes": ["curl/", "openssl/", "pcre2/", "zlib.h", "libxml2/", "sqlite3.h", "png.h", "jpeglib.h", "zconf.h"]},
+        {"name": "glib", "prefixes": ["glib.h", "glib/", "gio/", "gmodule/", "gobject/", "gtk/", "gdk/"]},
+        {"name": "std_c", "match": "std_c_dirs"},
+    ],
+}
+
+
+def load_profile(path: str | None) -> dict:
+    """Load profile from YAML file or return default. Raises on invalid YAML or missing PyYAML."""
+    if not path:
+        return DEFAULT_PROFILE.copy()
+    if yaml is None:
+        raise RuntimeError("--profile requires PyYAML; install with: pip install PyYAML")
+    with open(path, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    if not isinstance(data, dict):
+        raise ValueError("Profile file must be a YAML object")
+    # Merge with default so partial files work
+    out = DEFAULT_PROFILE.copy()
+    if "quoted_groups" in data:
+        out["quoted_groups"] = list(data["quoted_groups"])
+    if "angle_groups" in data:
+        out["angle_groups"] = list(data["angle_groups"])
+    return out
+
+
+def resolve_include(include_path: str, include_dirs: list[str]) -> str | None:
+    """Return the absolute path of the included file, or None if not found."""
+    for incdir in include_dirs:
+        if not os.path.isabs(incdir):
+            continue
+        candidate = os.path.normpath(os.path.join(incdir, include_path))
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def relpath_from_to(from_dir: str, to_path: str) -> str:
+    """Return path from from_dir to to_path, using forward slashes."""
+    abs_from = os.path.abspath(from_dir)
+    abs_to = os.path.abspath(to_path)
+    rel = os.path.relpath(abs_to, abs_from)
+    return rel.replace("\\", "/")
+
+
+def _quoted_group_name(source_path: str, include_path: str) -> str:
+    """Return group name for a quoted include: samename, samedir, parentdir, other, parentdir_other."""
+    p = include_path.replace("\\", "/")
+    base = os.path.splitext(os.path.basename(source_path))[0]
+    inc_base = os.path.splitext(os.path.basename(p))[0]
+    if base == inc_base:
+        return "samename"
+    if "/" not in p:
+        return "samedir"
+    if p.startswith("../"):
+        rest = p
+        while rest.startswith("../"):
+            rest = rest[3:]
+        if "/" not in rest:
+            return "parentdir"
+        return "parentdir_other"
+    return "other"
+
+
+def _quoted_group(source_path: str, include_path: str, quoted_groups: list[str]) -> tuple[int, str]:
+    """Return (order_index, sort_key) for a quoted include using profile quoted_groups."""
+    name = _quoted_group_name(source_path, include_path)
+    p = include_path.replace("\\", "/")
+    try:
+        idx = quoted_groups.index(name)
+    except ValueError:
+        idx = len(quoted_groups)
+    return (idx, p)
+
+
+def _path_matches_angle_group(path: str, grp: dict, basename: str) -> bool:
+    """Return True if path is matched by this group (prefixes or match type)."""
+    prefixes = grp.get("prefixes") or []
+    for p in prefixes:
+        if path.startswith(p) or path.lower().startswith(p.lower()):
+            return True
+    match = grp.get("match")
+    if match == "no_ext_h":
+        return "/" not in path and not basename.endswith(".h") and not basename.endswith(".hpp")
+    if match == "std_c_dirs":
+        if basename.endswith(".h"):
+            top = path.split("/", 1)[0].lower() if "/" in path else ""
+            return top in _STD_C_DIRS
+        return False
+    if match == "other_cpp":
+        return "/" in path and not basename.endswith(".h")
+    if match == "other_c":
+        return "/" in path and basename.endswith(".h")
+    if match == "other":
+        return "/" in path
+    return False
+
+
+def _angle_group(include_path: str, angle_groups: list[dict]) -> tuple[int, str, str]:
+    """Return (order_index, subgroup, sort_key) for an angle include using profile angle_groups."""
+    path = include_path.strip()
+    dirname = os.path.dirname(path)
+    basename = os.path.basename(path)
+
+    for idx, grp in enumerate(angle_groups):
+        prefixes = grp.get("prefixes") or []
+        for p in prefixes:
+            if path.startswith(p) or path.lower().startswith(p.lower()):
+                return (idx, "", path)
+        match = grp.get("match")
+        if match == "no_ext_h":
+            if "/" not in path and not basename.endswith(".h") and not basename.endswith(".hpp"):
+                return (idx, "", path)
+        elif match == "std_c_dirs":
+            if basename.endswith(".h"):
+                top = path.split("/", 1)[0].lower() if "/" in path else ""
+                if top in _STD_C_DIRS:
+                    return (idx, dirname or _STD_C_EMPTY_SUBGROUP, path)
+        elif match == "other_cpp":
+            if "/" in path and not basename.endswith(".h"):
+                return (idx, dirname or "\x00", path)
+        elif match == "other_c":
+            if "/" in path and basename.endswith(".h"):
+                # Only match if no later group would match (famous-c, glib, std-c)
+                if not any(
+                    _path_matches_angle_group(path, angle_groups[j], basename)
+                    for j in range(idx + 1, len(angle_groups))
+                ):
+                    return (idx, dirname or "\x00", path)
+        elif match == "other":
+            if "/" in path:
+                return (idx, dirname or "\x00", path)
+    # Fallback: last group or high index
+    return (len(angle_groups), "", path)
+
+
+def _parse_includes(content: str) -> tuple[str, list[tuple[bool, str, str]], str]:
+    """Split content into (before_includes, [(is_quoted, path, full_line)], after_includes)."""
+    before: list[str] = []
+    includes: list[tuple[bool, str, str]] = []
+    after_lines: list[str] = []
+    lines = content.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = re.match(r'^\s*#\s*include\s*("([^"]+)"|<([^>]+)>)(\s*(?://.*)?)\s*$', line)
+        if m:
+            is_quoted = m.group(2) is not None
+            path = m.group(2) if is_quoted else m.group(3)
+            includes.append((is_quoted, path, line))
+            i += 1
+            continue
+        # Blank line: if we're in include block, skip it; else it ends the block
+        if line.strip() == "":
+            if includes:
+                i += 1
+                continue
+        if includes:
+            after_lines = lines[i:]
+            break
+        before.append(line)
+        i += 1
+    return "\n".join(before), includes, "\n".join(after_lines)
+
+
+def _format_reordered_includes(
+    includes: list[tuple[bool, str, str]],
+    source_path: str,
+    source_dir: str,
+    include_dirs: list[str],
+    profile: dict,
+) -> tuple[list[str], int]:
+    """Update paths, then sort and group per profile. Returns (list of lines, path_update_count)."""
+    path_changes = 0
+    processed: list[tuple[bool, str, str, str]] = []  # (is_quoted, path, full_line, resolved_path)
+    for is_quoted, path, full_line in includes:
+        if is_quoted:
+            resolved = resolve_include(path, include_dirs)
+            if resolved is None:
+                candidate = os.path.normpath(os.path.join(source_dir, path))
+                if os.path.isfile(candidate):
+                    resolved = candidate
+            if resolved is not None:
+                new_path = relpath_from_to(source_dir, resolved)
+                if new_path != path:
+                    path_changes += 1
+                path = new_path
+            line = re.sub(r'#\s*include\s*"[^"]+"', f'#include "{path}"', full_line)
+            processed.append((True, path, line, path))
+        else:
+            processed.append((False, path, full_line, path))
+
+    # Group quoted and angle, deduplicate by path (keep first occurrence)
+    seen_quoted: set[str] = set()
+    quoted: list[tuple[str, str]] = []
+    for is_q, path, line, _ in processed:
+        if is_q and path not in seen_quoted:
+            seen_quoted.add(path)
+            quoted.append((path, line))
+    seen_angle: set[str] = set()
+    angle = []
+    for is_q, path, line, _ in processed:
+        if not is_q and path not in seen_angle:
+            seen_angle.add(path)
+            angle.append((path, line))
+
+    quoted_groups = profile.get("quoted_groups") or DEFAULT_PROFILE["quoted_groups"]
+    angle_groups = profile.get("angle_groups") or DEFAULT_PROFILE["angle_groups"]
+
+    def quoted_key(item: tuple[str, str]) -> tuple[int, str]:
+        p = item[0]
+        return _quoted_group(source_path, p, quoted_groups)[0], _quoted_group(
+            source_path, p, quoted_groups
+        )[1]
+
+    quoted.sort(key=quoted_key)
+
+    def angle_key(item: tuple[str, str]) -> tuple[int, str, str]:
+        p = item[0]
+        ok, sub, sk = _angle_group(p, angle_groups)
+        return ok, sub, sk
+
+    angle.sort(key=angle_key)
+
+    # Build output with blank lines between groups
+    out: list[str] = []
+    last_q = -1
+    for path, line in quoted:
+        g, _ = _quoted_group(source_path, path, quoted_groups)
+        if out and last_q >= 0 and g != last_q:
+            out.append("")
+        out.append(line)
+        last_q = g
+    if quoted and angle:
+        out.append("")
+    last_angle_key: tuple[int, str] = (-1, "")
+    for path, line in angle:
+        g, sub, _ = _angle_group(path, angle_groups)
+        if out and last_angle_key != (-1, ""):
+            if (g, sub) != last_angle_key:
+                out.append("")
+        out.append(line)
+        last_angle_key = (g, sub)
+    return out, path_changes
+
+
+def update_includes_in_content(
+    content: str,
+    source_path: str,
+    include_dirs: list[str],
+    reorder: bool = False,
+    profile: dict | None = None,
+) -> tuple[str, int]:
+    """Update #include "..." in content; optionally reorder. Returns (new_content, number_of_changes)."""
+    source_dir = os.path.dirname(os.path.abspath(source_path))
+    abs_include_dirs = [d for d in include_dirs if os.path.isdir(d)] if include_dirs else [source_dir]
+    if profile is None:
+        profile = DEFAULT_PROFILE
+
+    if reorder:
+        before, includes, after = _parse_includes(content)
+        if not includes:
+            return content, 0
+        lines, _path_changes = _format_reordered_includes(
+            includes, source_path, source_dir, abs_include_dirs, profile
+        )
+        new_block = "\n".join(lines)
+        if after:
+            new_content = f"{before}\n{new_block}\n\n{after}" if before else f"{new_block}\n\n{after}"
+        else:
+            new_content = f"{before}\n{new_block}" if before else new_block
+        return new_content, 1 if new_content != content else 0
+
+    pattern = re.compile(r'^(#\s*include\s*)"([^"]+)"(\s*(?://.*)?)$', re.MULTILINE)
+    changes = 0
+
+    def repl(match: re.Match) -> str:
+        nonlocal changes
+        prefix, old_path, suffix = match.group(1), match.group(2), match.group(3)
+        resolved = resolve_include(old_path, abs_include_dirs)
+        if resolved is None:
+            candidate = os.path.normpath(os.path.join(source_dir, old_path))
+            if os.path.isfile(candidate):
+                resolved = candidate
+        if resolved is None:
+            return match.group(0)
+        new_path = relpath_from_to(source_dir, resolved)
+        if new_path == old_path:
+            return match.group(0)
+        changes += 1
+        return f'{prefix}"{new_path}"{suffix}'
+
+    new_content = pattern.sub(repl, content)
+    return new_content, changes
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Update #include paths to be relative to each source file.",
+        epilog="Include dirs (-I) are searched in order when resolving quoted includes.",
+    )
+    parser.add_argument(
+        "-I",
+        dest="include_dirs",
+        action="append",
+        default=[],
+        metavar="includedir",
+        help="Directory to search for included files (can be repeated)",
+    )
+    parser.add_argument(
+        "-p",
+        "--profile",
+        dest="profile_file",
+        metavar="FILE",
+        default=None,
+        help="YAML profile file for include groups (used with --reorder); default built-in profile if omitted",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what would be changed without modifying files",
+    )
+    parser.add_argument(
+        "-k",
+        "--keep-order",
+        action="store_true",
+        dest="keep_order",
+        help="Do not reorder includes (default is to reorder per profile)",
+    )
+    parser.add_argument(
+        "sourcefiles",
+        nargs="+",
+        metavar="sourcefile",
+        help="Source files to update",
+    )
+    args = parser.parse_args()
+
+    if not args.include_dirs:
+        parser.error("At least one -I includedir is required")
+
+    abs_include_dirs = []
+    for d in args.include_dirs:
+        ad = os.path.abspath(d)
+        if os.path.isdir(ad):
+            abs_include_dirs.append(ad)
+        else:
+            print(f"Warning: include dir not found or not a directory, skipping: {d}", file=sys.stderr)
+    if not abs_include_dirs:
+        print("Error: no valid include directories", file=sys.stderr)
+        return 1
+
+    reorder = not args.keep_order
+    profile = DEFAULT_PROFILE
+    if reorder and args.profile_file:
+        try:
+            profile = load_profile(args.profile_file)
+        except (OSError, ValueError, RuntimeError) as e:
+            print(f"Error loading profile: {e}", file=sys.stderr)
+            return 1
+    elif reorder:
+        profile = load_profile(None)
+
+    total_changes = 0
+    for path in args.sourcefiles:
+        if not os.path.isfile(path):
+            print(f"Warning: not a file, skipping: {path}", file=sys.stderr)
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except OSError as e:
+            print(f"Error reading {path}: {e}", file=sys.stderr)
+            continue
+
+        new_content, n = update_includes_in_content(
+            content, path, abs_include_dirs, reorder=reorder, profile=profile
+        )
+        if n == 0:
+            continue
+        total_changes += n
+        if args.dry_run:
+            print(f"Would update {path} ({n} include(s))")
+            continue
+        try:
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                f.write(new_content)
+        except OSError as e:
+            print(f"Error writing {path}: {e}", file=sys.stderr)
+            continue
+        print(f"Updated {path} ({n} include(s))")
+
+    if args.dry_run and total_changes:
+        print(f"Dry run: {total_changes} total include(s) would be updated.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

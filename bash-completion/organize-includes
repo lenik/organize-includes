@@ -1,0 +1,27 @@
+# Bash completion for organize-includes
+# Install: copy to /etc/bash_completion.d/ or source from ~/.bashrc
+
+_organize_includes() {
+    local cur prev words cword
+    _init_completion -s || return
+
+    case $prev in
+        -I|--include-dir)
+            _filedir -d
+            return
+            ;;
+        -p|--profile)
+            _filedir yaml yml
+            return
+            ;;
+    esac
+
+    if [[ $cur == -* ]]; then
+        COMPREPLY=($(compgen -W '-I -p --profile -k --keep-order --dry-run --help --version' -- "$cur"))
+        return
+    fi
+
+    _filedir
+}
+
+complete -F _organize_includes organize-includes

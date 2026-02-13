@@ -1,0 +1,12 @@
+# Debian
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/files
+debian/organize-includes/
+debian/*.log
+debian/*.substvars
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
