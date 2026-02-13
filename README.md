@@ -9,15 +9,25 @@ organize-includes -I <includedir> [OPTIONS] sourcefiles...
 ```
 
 - **-I** *includedir* — Add directory to include search path (repeatable). Required.
-- **-p, --profile** *FILE* — Load include group profile from YAML (overrides built-in default).
+- **-p, --profile** *FILE* — Load include group profile from YAML. If omitted, a default profile is looked up (see below).
 - **-k, --keep-order** — Do not reorder includes (default is to reorder per profile).
 - **--dry-run** — Show what would be changed without modifying files.
 
-Include directories are searched in order when resolving quoted includes. By default, includes are grouped and sorted per the built-in profile; use `-p FILE` to customize or `-k` to leave order unchanged.
+Include directories are searched in order when resolving quoted includes. By default, includes are grouped and sorted per a profile; use `-p FILE` to force a file or `-k` to leave order unchanged.
+
+## Default profile
+
+When reordering without `-p`, the program looks for a profile file in this order (first existing file wins):
+
+1. **./.includes.yaml** — current working directory  
+2. **~/.includes.yaml** — home directory  
+3. **~/.config/organize-includes/default.yaml**
+
+Home is `$HOME` on Linux/macOS and `%USERPROFILE%` on Windows. If none exist, the built-in profile is used.
 
 ## Profile file (YAML)
 
-Use `-p profile.yaml` to customize grouping. Default profile order: **other-c++** → **famous-c++** → **boost** → **std-c++** → **other-c** → **famous-c** → **glib** → **std-c**. See `example/style.yaml`:
+Use `-p profile.yaml` to load a specific file. Built-in default angle order: **other-c++** → **famous-c++** → **boost** → **std-c++** → **other-c** → **famous-c** → **glib** → **std-c**. See `example/default.yaml`:
 
 - **quoted_groups** — List of quoted-include group names in order: `samename`, `samedir`, `parentdir`, `other`, `parentdir_other`.
 - **angle_groups** — List of angle-include groups (order = output order). Each entry has:
@@ -28,7 +38,7 @@ Use `-p profile.yaml` to customize grouping. Default profile order: **other-c++*
 ## Dependencies
 
 - Python 3.10+
-- **PyYAML** — Required only when using `-p/--profile FILE`. Install with `pip install PyYAML` or the system package `python3-yaml`.
+- **PyYAML** — Required when loading a profile from a file (default search or `-p`). Install with `pip install PyYAML` or the system package `python3-yaml`.
 
 ## License
 

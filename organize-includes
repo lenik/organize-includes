@@ -10,7 +10,7 @@ Usage:
 
 Options:
   -I <includedir>       Add to include search path
-  -p/--profile FILE     Load profile from YAML
+  -p/--profile FILE     Load profile from YAML (default: ./.includes.yaml, ~/.includes.yaml, ~/.config/organize-includes/default.yaml)
   -k/--keep-order       Do not reorder includes (default is to reorder per profile)
 """
 
@@ -49,6 +49,25 @@ DEFAULT_PROFILE = {
         {"name": "std_c", "match": "std_c_dirs"},
     ],
 }
+
+
+def _default_profile_search_paths() -> list[str]:
+    """Search order for default profile: ./.includes.yaml, <home>/.includes.yaml, <home>/.config/organize-includes/default.yaml.
+    Home is $HOME on Linux/macOS, %USERPROFILE% on Windows (os.path.expanduser('~'))."""
+    home = os.path.expanduser("~")
+    return [
+        os.path.join(os.getcwd(), ".includes.yaml"),
+        os.path.join(home, ".includes.yaml"),
+        os.path.join(home, ".config", "organize-includes", "default.yaml"),
+    ]
+
+
+def find_default_profile() -> str | None:
+    """Return the first path in default search order that exists, or None."""
+    for path in _default_profile_search_paths():
+        if os.path.isfile(path):
+            return path
+    return None
 
 
 def load_profile(path: str | None) -> dict:
@@ -355,7 +374,7 @@ def main() -> int:
         dest="profile_file",
         metavar="FILE",
         default=None,
-        help="YAML profile file for include groups (used with --reorder); default built-in profile if omitted",
+        help="YAML profile file (default: ./.includes.yaml, ~/.includes.yaml, ~/.config/organize-includes/default.yaml, then built-in)",
     )
     parser.add_argument(
         "--dry-run",
@@ -400,7 +419,8 @@ def main() -> int:
             print(f"Error loading profile: {e}", file=sys.stderr)
             return 1
     elif reorder:
-        profile = load_profile(None)
+        default_path = find_default_profile()
+        profile = load_profile(default_path)
 
     total_changes = 0
     for path in args.sourcefiles:

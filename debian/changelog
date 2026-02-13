@@ -1,7 +1,14 @@
 organize-includes (0.0.1) UNRELEASED; urgency=medium
 
   * Initial release.
-  * YAML style for include groups; -s/--style FILE.
-  * --reorder respects style (quoted_groups, angle_groups).
+  * Update #include paths to be relative; reorder and group includes per YAML
+    profile (default). Use -k/--keep-order to skip reordering.
+  * -p/--profile FILE to load profile; default search: ./.includes.yaml,
+    ~/.includes.yaml, ~/.config/organize-includes/default.yaml (then built-in).
+  * Tag-first angle group logic: claiming groups (prefixes, no_ext_h, std_c_dirs)
+    vs other_c/other_cpp by extension when unclaimed. Subgroup by top-level dir.
+  * Quoted groups: samename, samedir, parentdir, other, parentdir_other.
+  * Debian packaging (native source format), man page, bash completion.
+  * Makefile: dist, release, release-force (changelog-driven release notes).
 
  -- Lenik (谢继雷) <lenik@bodz.net>  Fri, 13 Feb 2026 12:00:00 +0000

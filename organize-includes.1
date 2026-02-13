@@ -16,10 +16,12 @@ resolves quoted
 .B #include
 paths using the given include directories and rewrites them to be relative to each source file. By default it also groups and sorts
 .B #include
-lines according to the built-in profile (or
+lines according to a profile (see
+.SM "DEFAULT PROFILE"
+below, or
 .B \-p
-.I FILE
-). Use
+.IR FILE ).
+Use
 .B \-k
 to leave include order unchanged.
 .SH OPTIONS
@@ -32,15 +34,38 @@ to the include search path. May be repeated. At least one is required.
 .BI \-p \-\-profile " FILE"
 Load include group profile from the YAML file
 .IR FILE .
-If omitted, the built-in default profile is used.
+If omitted, the default profile search is used (see
+.SM "DEFAULT PROFILE" ).
 .TP
 .B \-k \-\-keep\-order
 Do not reorder includes (default is to reorder per profile).
 .TP
 .B \-\-dry\-run
 Print what would be changed without modifying files.
+.SH DEFAULT PROFILE
+When reordering without
+.BR \-p ,
+a profile file is sought in this order (first existing wins):
+.RS
+.PD 0
+.IP 1. 4
+Current directory
+.I .includes.yaml
+.IP 2. 4
+Home
+.I .includes.yaml
+.IP 3. 4
+Home
+.I .config/organize-includes/default.yaml
+.PD
+.RE
+Home is
+.B $HOME
+on Linux/macOS and
+.B %USERPROFILE%
+on Windows. If none exist, the built-in profile is used.
 .SH PROFILE FILE
-The profile file is YAML. Default angle order: other-c++ > famous-c++ > boost > std-c++ > other-c > famous-c > glib > std-c. Top-level keys:
+The profile file is YAML. Built-in angle order: other-c++ > famous-c++ > boost > std-c++ > other-c > famous-c > glib > std-c. Top-level keys:
 .TP
 .B quoted_groups
 List of quoted-include group names in output order:
@@ -64,11 +89,11 @@ List of angle-include groups. Each entry has
 .BR other_c ,
 .BR other ).
 See
-.I example/style.yaml
+.I example/default.yaml
 in the source tree.
 .SH EXIT STATUS
 0 on success. 1 on invalid options, missing include dirs, profile load error, or I/O error.
 .SH SEE ALSO
-README.md, example/style.yaml
+README.md, example/default.yaml
 .SH LICENSE
 GPL-3.0-or-later.
