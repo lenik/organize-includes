@@ -1,15 +1,14 @@
-organize-includes (0.0.2) UNRELEASED; urgency=medium
+organize-includes (0.0.3) testing; urgency=medium
 
-  * Add -v/--verbose, -q/--quiet, --debug; use logging module for all output.
-  * Log which profile file is in use when verbose or debug.
-  * When -v or --debug: recursively scan each -I dir and log file count and total.
-  * Search quoted includes in source file's directory first, then -I dirs
-    (compiler behavior; fixes same-dir headers).
-  * Clarify resolve_include "not found" debug message.
+  * Add -r/--recursive option to scan -I directories recursively.
+  * Add -J/--include-rec option to add include directories recursively.
+  * Add -n/--relative-name option to rewrite include paths relative to source file.
+  * Change default behavior: only reorder includes by default, don't rewrite paths.
+    Use -n to also rewrite paths to be relative to source file directory.
 
- -- Lenik (谢继雷) <lenik@bodz.net>  Fri, 13 Feb 2026 14:00:00 +0000
+ -- Lenik (谢继雷) <lenik@bodz.net>  Sun, 01 Mar 2026 17:00:00 +0000
 
-organize-includes (0.0.1) UNRELEASED; urgency=medium
+organize-includes (0.0.1) testing; urgency=medium
 
   * Initial release.
   * Update #include paths to be relative; reorder and group includes per YAML

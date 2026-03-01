@@ -9,8 +9,11 @@ organize-includes -I <includedir> [OPTIONS] sourcefiles...
 ```
 
 - **-I** *includedir* — Add directory to include search path (repeatable). Required.
+- **-r, --recursive** — Scan `-I` directories recursively for includes (default: non-recursive).
+- **-J, --include-rec** *includedir* — Add include directory recursively (same as `-I` with `-r`; repeatable).
 - **-p, --profile** *FILE* — Load include group profile from YAML. If omitted, a default profile is looked up (see below).
 - **-k, --keep-order** — Do not reorder includes (default is to reorder per profile).
+- **-n, --relative-name** — Rewrite include paths to be relative to source file (default: only reorder).
 - **--dry-run** — Show what would be changed without modifying files.
 
 Include directories are searched in order when resolving quoted includes. By default, includes are grouped and sorted per a profile; use `-p FILE` to force a file or `-k` to leave order unchanged.
@@ -39,6 +42,21 @@ Use `-p profile.yaml` to load a specific file. Built-in default angle order: **o
 
 - Python 3.10+
 - **PyYAML** — Required when loading a profile from a file (default search or `-p`). Install with `pip install PyYAML` or the system package `python3-yaml`.
+
+## Changelog
+
+### 0.0.3 (2026-03-01)
+
+- **New option `-r/--recursive`**: Scan `-I` directories recursively to find included files in subdirectories.
+- **New option `-J/--include-rec`**: Add include directory with recursive search enabled (equivalent to `-I` with `-r`).
+- **New option `-n/--relative-name`**: Rewrite include paths to be relative to each source file's directory. Without this option, only reordering is performed (paths are not changed).
+- **Behavior change**: By default, the tool now only reorders includes according to the profile without rewriting paths. Use `-n` to also rewrite paths to be relative.
+
+### 0.0.2 (2026-02-13)
+
+- Added `-v/--verbose`, `-q/--quiet`, `--debug` options
+- Log profile in use and scan information
+- Fix quoted include search order
 
 ## License
 

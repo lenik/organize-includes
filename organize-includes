@@ -10,8 +10,11 @@ Usage:
 
 Options:
   -I <includedir>       Add to include search path
+  -r/--recursive        Scan -I directories recursively (default: non-recursive)
+  -J/--include-rec DIR  Add include directory recursively (same as -I with -r)
   -p/--profile FILE     Load profile from YAML (default: ./.includes.yaml, ~/.includes.yaml, ~/.config/organize-includes/default.yaml)
   -k/--keep-order       Do not reorder includes (default is to reorder per profile)
+  -n/--relative-name    Rewrite include paths to be relative to source file (default: only reorder)
   -v/--verbose          Log profile file in use and extra info
   -q/--quiet            Only errors and warnings
   --debug               Enable debug logging
@@ -110,16 +113,33 @@ def load_profile(path: str | None) -> dict:
     return out
 
 
-def resolve_include(include_path: str, include_dirs: list[str]) -> str | None:
-    """Return the absolute path of the included file, or None if not found."""
+def resolve_include(include_path: str, include_dirs: list[str], recursive: bool = False) -> str | None:
+    """Return the absolute path of the included file, or None if not found.
+    
+    When recursive=True, also searches subdirectories of each include directory.
+    """
     for incdir in include_dirs:
         if not os.path.isabs(incdir):
             continue
+        # First try direct path (non-recursive, fastest)
         candidate = os.path.normpath(os.path.join(incdir, include_path))
         log.debug("resolve_include %r: try %r -> %s", include_path, incdir, candidate)
         if os.path.isfile(candidate):
             log.debug("resolve_include %r: found %s", include_path, candidate)
             return candidate
+        
+        # If recursive, search subdirectories
+        if recursive:
+            log.debug("resolve_include %r: searching recursively in %s", include_path, incdir)
+            try:
+                for root, _dirs, files in os.walk(incdir, followlinks=False):
+                    if include_path in files:
+                        found = os.path.join(root, include_path)
+                        log.debug("resolve_include %r: found recursively %s", include_path, found)
+                        return found
+            except OSError:
+                pass
+    
     log.debug("resolve_include %r: not found in %s dirs", include_path, len(include_dirs))
     return None
 
@@ -257,13 +277,28 @@ def _format_reordered_includes(
     source_dir: str,
     include_dirs: list[str],
     profile: dict,
+    recursive: bool = False,
+    rewrite_paths: bool = True,
 ) -> tuple[list[str], int]:
-    """Update paths, then sort and group per profile. Returns (list of lines, path_update_count)."""
+    """Update paths, then sort and group per profile. Returns (list of lines, path_update_count).
+    
+    Args:
+        includes: List of (is_quoted, path, full_line) tuples
+        source_path: Path to source file
+        source_dir: Directory containing source file
+        include_dirs: Include directories to search
+        profile: Profile for grouping/ordering
+        recursive: Whether to search include directories recursively
+        rewrite_paths: Whether to rewrite include paths to be relative to source file
+    
+    Returns:
+        Tuple of (output_lines, path_change_count)
+    """
     path_changes = 0
     processed: list[tuple[bool, str, str, str]] = []  # (is_quoted, path, full_line, resolved_path)
     for is_quoted, path, full_line in includes:
-        if is_quoted:
-            resolved = resolve_include(path, include_dirs)
+        if is_quoted and rewrite_paths:
+            resolved = resolve_include(path, include_dirs, recursive=recursive)
             if resolved is not None:
                 new_path = relpath_from_to(source_dir, resolved)
                 if new_path != path:
@@ -272,7 +307,7 @@ def _format_reordered_includes(
             line = re.sub(r'#\s*include\s*"[^"]+"', f'#include "{path}"', full_line)
             processed.append((True, path, line, path))
         else:
-            processed.append((False, path, full_line, path))
+            processed.append((False if not is_quoted else True, path, full_line, path))
 
     # Group quoted and angle, deduplicate by path (keep first occurrence)
     seen_quoted: set[str] = set()
@@ -337,9 +372,24 @@ def update_includes_in_content(
     include_dirs: list[str],
     reorder: bool = False,
     profile: dict | None = None,
+    relative_name: bool = False,
+    recursive: bool = False,
 ) -> tuple[str, int]:
-    """Update #include "..." in content; optionally reorder. Returns (new_content, number_of_changes)."""
-    log.debug("update_includes_in_content %r reorder=%s", source_path, reorder)
+    """Update #include "..." in content; optionally reorder and/or rewrite paths.
+    
+    Args:
+        content: File content to process
+        source_path: Path to the source file
+        include_dirs: List of include directories to search
+        reorder: Whether to reorder includes according to profile
+        profile: Profile dict for grouping/ordering
+        relative_name: Whether to rewrite include paths to be relative to source file
+        recursive: Whether to search include directories recursively
+    
+    Returns:
+        Tuple of (new_content, number_of_changes)
+    """
+    log.debug("update_includes_in_content %r reorder=%s relative_name=%s", source_path, reorder, relative_name)
     source_dir = os.path.dirname(os.path.abspath(source_path))
     # Search order: current file's directory first (like compilers), then -I dirs
     abs_include_dirs = [d for d in include_dirs if os.path.isdir(d)] if include_dirs else []
@@ -352,7 +402,8 @@ def update_includes_in_content(
         if not includes:
             return content, 0
         lines, _path_changes = _format_reordered_includes(
-            includes, source_path, source_dir, search_dirs, profile
+            includes, source_path, source_dir, search_dirs, profile, recursive=recursive,
+            rewrite_paths=relative_name
         )
         new_block = "\n".join(lines)
         if after:
@@ -361,13 +412,17 @@ def update_includes_in_content(
             new_content = f"{before}\n{new_block}" if before else new_block
         return new_content, 1 if new_content != content else 0
 
+    # Non-reorder mode: only rewrite paths if relative_name is True
+    if not relative_name:
+        return content, 0
+        
     pattern = re.compile(r'^(#\s*include\s*)"([^"]+)"(\s*(?://.*)?)$', re.MULTILINE)
     changes = 0
 
     def repl(match: re.Match) -> str:
         nonlocal changes
         prefix, old_path, suffix = match.group(1), match.group(2), match.group(3)
-        resolved = resolve_include(old_path, search_dirs)
+        resolved = resolve_include(old_path, search_dirs, recursive=recursive)
         if resolved is None:
             return match.group(0)
         new_path = relpath_from_to(source_dir, resolved)
@@ -394,6 +449,22 @@ def main() -> int:
         help="Directory to search for included files (can be repeated)",
     )
     parser.add_argument(
+        "-r",
+        "--recursive",
+        action="store_true",
+        dest="recursive",
+        help="Scan -I directories recursively for includes (default: non-recursive)",
+    )
+    parser.add_argument(
+        "-J",
+        "--include-rec",
+        dest="include_rec_dirs",
+        action="append",
+        default=[],
+        metavar="includedir",
+        help="Add include directory recursively (same as -I with -r; can be repeated)",
+    )
+    parser.add_argument(
         "-p",
         "--profile",
         dest="profile_file",
@@ -412,6 +483,13 @@ def main() -> int:
         action="store_true",
         dest="keep_order",
         help="Do not reorder includes (default is to reorder per profile)",
+    )
+    parser.add_argument(
+        "-n",
+        "--relative-name",
+        action="store_true",
+        dest="relative_name",
+        help="Rewrite include paths to be relative to source file (default: only reorder)",
     )
     parser.add_argument(
         "-v",
@@ -446,16 +524,35 @@ def main() -> int:
         format="%(message)s",
     )
 
-    if not args.include_dirs:
-        parser.error("At least one -I includedir is required")
+    # Combine -I and -J directories
+    # -J directories are always recursive, -I directories use -r flag
+    all_include_dirs = list(args.include_dirs) + list(args.include_rec_dirs)
+    
+    if not all_include_dirs:
+        parser.error("At least one -I or -J includedir is required")
 
     abs_include_dirs = []
+    recursive_dirs = set()
+    
+    # Process -I directories
     for d in args.include_dirs:
         ad = os.path.abspath(d)
         if os.path.isdir(ad):
             abs_include_dirs.append(ad)
+            if args.recursive:
+                recursive_dirs.add(ad)
         else:
             log.warning("Include dir not found or not a directory, skipping: %s", d)
+    
+    # Process -J directories (always recursive)
+    for d in args.include_rec_dirs:
+        ad = os.path.abspath(d)
+        if os.path.isdir(ad):
+            abs_include_dirs.append(ad)
+            recursive_dirs.add(ad)
+        else:
+            log.warning("Include dir not found or not a directory, skipping: %s", d)
+    
     if not abs_include_dirs:
         log.error("No valid include directories")
         return 1
@@ -463,15 +560,20 @@ def main() -> int:
     if args.verbose or args.debug:
         total_scanned = 0
         for ad in abs_include_dirs:
+            is_recursive = ad in recursive_dirs
             n = _count_files_recursive(ad)
             if n >= 0:
-                log.info("Scanned -I %s: %s files", ad, n)
+                if is_recursive:
+                    log.info("Scanned -I/-J %s (recursive): %s files", ad, n)
+                else:
+                    log.info("Scanned -I %s: %s files", ad, n)
                 total_scanned += n
             else:
                 log.warning("Could not scan -I %s", ad)
         log.info("Total files in include dirs: %s", total_scanned)
 
     reorder = not args.keep_order
+    relative_name = args.relative_name
     profile = DEFAULT_PROFILE
     profile_in_use: str | None = None
     if reorder and args.profile_file:
@@ -488,6 +590,9 @@ def main() -> int:
     if profile_in_use and (args.verbose or args.debug):
         log.info("Using profile: %s", profile_in_use)
 
+    # Determine if recursive search is needed
+    use_recursive = bool(recursive_dirs)
+
     total_changes = 0
     for path in args.sourcefiles:
         if not os.path.isfile(path):
@@ -501,7 +606,8 @@ def main() -> int:
             continue
 
         new_content, n = update_includes_in_content(
-            content, path, abs_include_dirs, reorder=reorder, profile=profile
+            content, path, abs_include_dirs, reorder=reorder, profile=profile,
+            relative_name=relative_name, recursive=use_recursive
         )
         if n == 0:
             continue
